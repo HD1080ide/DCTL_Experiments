@@ -1,0 +1,532 @@
+// ACES2 Tone Mapping Experiments
+
+//DEFINE_UI_PARAMS(daniele_n, Peak Luminance, DCTLUI_SLIDER_FLOAT, 100, 100, 1000, 1)
+DEFINE_UI_PARAMS(sat, Saturation, DCTLUI_SLIDER_FLOAT, 1, 0, 2, 1)
+DEFINE_UI_PARAMS(slider_k1, k1, DCTLUI_SLIDER_FLOAT, 4.73, 0, 40, 1)
+DEFINE_UI_PARAMS(slider_k2, k2, DCTLUI_SLIDER_FLOAT, 1.646, 0, 5, 1)
+DEFINE_UI_PARAMS(angleR, angleR, DCTLUI_SLIDER_INT, 41, 0, 360, 1)
+DEFINE_UI_PARAMS(angleY, angleY, DCTLUI_SLIDER_INT, 100, 0, 360, 1)
+DEFINE_UI_PARAMS(angleG, angleG, DCTLUI_SLIDER_INT, 122, 0, 360, 1)
+DEFINE_UI_PARAMS(angleC, angleC, DCTLUI_SLIDER_INT, 224, 0, 360, 1)
+DEFINE_UI_PARAMS(angleB, angleB, DCTLUI_SLIDER_INT, 283, 0, 360, 1)
+DEFINE_UI_PARAMS(angleM, angleM, DCTLUI_SLIDER_INT, 337, 0, 360, 1)
+DEFINE_UI_PARAMS(lumR, lumR, DCTLUI_SLIDER_FLOAT, 1.0, 0.0, 1.0, 0.1)
+DEFINE_UI_PARAMS(lumY, lumY, DCTLUI_SLIDER_FLOAT, 0.394, 0.0, 1.0, 0.1)
+DEFINE_UI_PARAMS(lumG, lumG, DCTLUI_SLIDER_FLOAT, 1.0, 0.0, 1.0, 0.1)
+DEFINE_UI_PARAMS(lumC, lumC, DCTLUI_SLIDER_FLOAT, 1.0, 0.0, 1.0, 0.1)
+DEFINE_UI_PARAMS(lumB, lumB, DCTLUI_SLIDER_FLOAT, 1.0, 0.0, 1.0, 0.1)
+DEFINE_UI_PARAMS(lumM, lumM, DCTLUI_SLIDER_FLOAT, 1.0, 0.0, 1.0, 0.1)
+DEFINE_UI_PARAMS(HDR, HDR, DCTLUI_CHECK_BOX, 0)
+DEFINE_UI_PARAMS(invert, Invert, DCTLUI_CHECK_BOX, 0)
+DEFINE_UI_PARAMS(Timeline_color_space, Timeline color space, DCTLUI_COMBO_BOX, 0, {DWG_Intermediate, DWG_linear}, {DaVinci WG/Intermediate, DaVinci WG/Linear})
+
+typedef struct
+{
+    float3 x;
+    float3 y;
+    float3 z;
+} float3x3;
+
+__CONSTANT__ float3 shadowCompressParams = {0.54f, 0.13f, 0.545f}; // 0.13 = max(0.121, 0.132 - 0.00002 * parent.ssts_luminance.z)
+__CONSTANT__ float sat = 1.2f;
+__CONSTANT__ float shadow_boost = 1.195f; // max(1.08, 1.21 - 0.00015 * parent.ssts_luminance.z)
+
+__CONSTANT__ float limitJmax = 100.0f;
+
+__device__ float daniele_n = 1000.0f; // peak white  
+
+__CONSTANT__ float referenceLuminance = 100;
+
+// cusp values calculated using Python in https://github.com/nick-shaw/aces-ot-vwg-experiments/blob/da8d7d0ad632ea9b96ec9504795e3260690b4d48/python/cusp_path.py
+// (resulting values saved in ./data/J_cusp_BT709.txt and ./data/M_cusp_BT709.txt)
+__CONSTANT__ float2 gamutCuspTable[360] = {
+{56.9f, 85.9f},
+{56.6f, 86.1f},
+{56.3f, 86.3f},
+{56.0f, 86.3f},
+{55.7f, 86.4f},
+{55.4f, 86.4f},
+{55.2f, 86.4f},
+{54.9f, 86.2f},
+{54.7f, 86.1f},
+{54.4f, 85.8f},
+{54.2f, 85.6f},
+{53.9f, 85.2f},
+{53.7f, 84.9f},
+{53.4f, 84.4f},
+{53.2f, 84.0f},
+{53.0f, 83.5f},
+{52.7f, 83.0f},
+{52.5f, 82.5f},
+{52.2f, 82.0f},
+{52.0f, 81.5f},
+{51.8f, 81.0f},
+{51.5f, 80.5f},
+{51.3f, 79.9f},
+{51.0f, 79.4f},
+{50.8f, 78.9f},
+{50.6f, 78.4f},
+{51.1f, 76.6f},
+{51.6f, 74.9f},
+{52.1f, 73.3f},
+{52.6f, 71.8f},
+{53.0f, 70.4f},
+{53.5f, 69.1f},
+{54.0f, 67.8f},
+{54.4f, 66.7f},
+{54.8f, 65.5f},
+{55.3f, 64.5f},
+{55.7f, 63.5f},
+{56.1f, 62.5f},
+{56.5f, 61.6f},
+{56.9f, 60.8f},
+{57.3f, 59.9f},
+{57.7f, 59.2f},
+{58.1f, 58.5f},
+{58.5f, 57.8f},
+{58.8f, 57.1f},
+{59.2f, 56.5f},
+{59.6f, 55.9f},
+{60.0f, 55.3f},
+{60.3f, 54.9f},
+{60.7f, 54.4f},
+{61.0f, 53.9f},
+{61.4f, 53.4f},
+{61.7f, 53.0f},
+{62.1f, 52.7f},
+{62.4f, 52.3f},
+{62.8f, 51.9f},
+{63.1f, 51.6f},
+{63.4f, 51.3f},
+{63.8f, 51.0f},
+{64.1f, 50.8f},
+{64.5f, 50.5f},
+{64.8f, 50.3f},
+{65.1f, 50.1f},
+{65.5f, 49.9f},
+{65.8f, 49.7f},
+{66.2f, 49.6f},
+{66.5f, 49.4f},
+{66.9f, 49.4f},
+{67.2f, 49.2f},
+{67.6f, 49.2f},
+{67.9f, 49.1f},
+{68.3f, 49.1f},
+{68.6f, 49.0f},
+{69.0f, 49.0f},
+{69.4f, 49.0f},
+{69.7f, 49.0f},
+{70.1f, 49.1f},
+{70.4f, 49.1f},
+{70.8f, 49.2f},
+{71.2f, 49.3f},
+{71.6f, 49.4f},
+{72.0f, 49.5f},
+{72.4f, 49.7f},
+{72.8f, 49.8f},
+{73.2f, 50.0f},
+{73.6f, 50.2f},
+{74.0f, 50.4f},
+{74.5f, 50.7f},
+{74.9f, 50.9f},
+{75.4f, 51.2f},
+{75.8f, 51.5f},
+{76.3f, 51.8f},
+{76.8f, 52.2f},
+{77.3f, 52.5f},
+{77.8f, 52.9f},
+{78.3f, 53.3f},
+{78.8f, 53.7f},
+{79.4f, 54.2f},
+{79.9f, 54.7f},
+{80.5f, 55.2f},
+{81.1f, 55.8f},
+{81.7f, 56.4f},
+{82.3f, 57.0f},
+{83.0f, 57.7f},
+{83.7f, 58.4f},
+{84.4f, 59.1f},
+{85.1f, 59.9f},
+{85.9f, 60.7f},
+{86.7f, 61.6f},
+{87.5f, 62.5f},
+{87.7f, 63.1f},
+{87.3f, 63.3f},
+{86.9f, 63.5f},
+{86.5f, 63.7f},
+{86.1f, 64.0f},
+{85.7f, 64.3f},
+{85.3f, 64.7f},
+{84.9f, 65.0f},
+{84.5f, 65.4f},
+{84.0f, 65.7f},
+{83.6f, 66.2f},
+{83.2f, 66.6f},
+{82.8f, 67.1f},
+{82.4f, 67.7f},
+{81.9f, 68.1f},
+{81.5f, 68.7f},
+{81.0f, 69.3f},
+{80.6f, 70.0f},
+{80.1f, 70.6f},
+{79.7f, 71.4f},
+{79.2f, 72.1f},
+{78.7f, 72.9f},
+{78.2f, 73.7f},
+{77.7f, 74.5f},
+{77.2f, 75.5f},
+{76.7f, 76.4f},
+{76.2f, 77.5f},
+{75.7f, 78.5f},
+{75.1f, 79.6f},
+{74.6f, 80.9f},
+{74.0f, 82.1f},
+{73.9f, 82.0f},
+{74.4f, 80.5f},
+{74.9f, 79.1f},
+{75.3f, 77.7f},
+{75.7f, 76.3f},
+{76.1f, 75.1f},
+{76.5f, 73.8f},
+{76.8f, 72.5f},
+{77.2f, 71.4f},
+{77.5f, 70.2f},
+{77.8f, 69.1f},
+{78.1f, 68.0f},
+{78.4f, 67.0f},
+{78.7f, 65.9f},
+{78.9f, 65.0f},
+{79.2f, 64.0f},
+{79.4f, 63.1f},
+{79.7f, 62.2f},
+{79.9f, 61.3f},
+{80.1f, 60.5f},
+{80.3f, 59.6f},
+{80.6f, 58.9f},
+{80.8f, 58.1f},
+{81.0f, 57.4f},
+{81.2f, 56.7f},
+{81.4f, 56.0f},
+{81.6f, 55.3f},
+{81.8f, 54.7f},
+{82.0f, 54.1f},
+{82.2f, 53.5f},
+{82.4f, 52.9f},
+{82.6f, 52.3f},
+{82.7f, 51.7f},
+{82.9f, 51.2f},
+{83.1f, 50.8f},
+{83.3f, 50.3f},
+{83.5f, 49.8f},
+{83.7f, 49.3f},
+{83.8f, 48.9f},
+{84.0f, 48.5f},
+{84.2f, 48.1f},
+{84.4f, 47.7f},
+{84.6f, 47.3f},
+{84.7f, 47.0f},
+{84.9f, 46.7f},
+{85.1f, 46.4f},
+{85.3f, 46.1f},
+{85.5f, 45.8f},
+{85.7f, 45.6f},
+{85.9f, 45.3f},
+{86.0f, 45.0f},
+{86.2f, 44.8f},
+{86.4f, 44.7f},
+{86.6f, 44.5f},
+{86.8f, 44.3f},
+{86.5f, 44.0f},
+{85.9f, 43.5f},
+{85.4f, 43.0f},
+{84.9f, 42.7f},
+{84.4f, 42.3f},
+{83.9f, 41.9f},
+{83.3f, 41.5f},
+{82.9f, 41.1f},
+{82.4f, 40.8f},
+{81.8f, 40.5f},
+{81.5f, 40.2f},
+{81.0f, 39.9f},
+{80.5f, 39.6f},
+{80.1f, 39.4f},
+{79.7f, 39.1f},
+{79.2f, 38.9f},
+{78.8f, 38.6f},
+{78.4f, 38.5f},
+{77.9f, 38.3f},
+{77.6f, 38.1f},
+{77.2f, 37.9f},
+{76.8f, 37.8f},
+{76.4f, 37.6f},
+{76.0f, 37.5f},
+{75.5f, 37.3f},
+{75.2f, 37.2f},
+{74.8f, 37.1f},
+{74.5f, 37.0f},
+{74.0f, 36.9f},
+{73.7f, 36.9f},
+{73.3f, 36.8f},
+{72.9f, 36.7f},
+{72.5f, 36.7f},
+{72.2f, 36.6f},
+{71.8f, 36.6f},
+{71.5f, 36.6f},
+{71.1f, 36.6f},
+{70.7f, 36.6f},
+{70.4f, 36.6f},
+{70.0f, 36.6f},
+{69.7f, 36.7f},
+{69.3f, 36.7f},
+{68.9f, 36.7f},
+{68.6f, 36.8f},
+{68.2f, 36.9f},
+{67.9f, 37.0f},
+{67.5f, 37.1f},
+{67.1f, 37.1f},
+{66.8f, 37.3f},
+{66.4f, 37.4f},
+{66.0f, 37.5f},
+{65.7f, 37.7f},
+{65.3f, 37.8f},
+{64.9f, 38.0f},
+{64.5f, 38.1f},
+{64.1f, 38.3f},
+{63.8f, 38.5f},
+{63.4f, 38.7f},
+{63.0f, 38.9f},
+{62.6f, 39.1f},
+{62.2f, 39.4f},
+{61.8f, 39.6f},
+{61.5f, 39.9f},
+{61.1f, 40.2f},
+{60.7f, 40.5f},
+{60.3f, 40.8f},
+{59.9f, 41.1f},
+{59.5f, 41.4f},
+{59.0f, 41.8f},
+{58.6f, 42.1f},
+{58.2f, 42.6f},
+{57.8f, 42.9f},
+{57.3f, 43.3f},
+{56.9f, 43.8f},
+{56.4f, 44.2f},
+{56.0f, 44.6f},
+{55.5f, 45.1f},
+{55.1f, 45.6f},
+{54.6f, 46.1f},
+{54.1f, 46.7f},
+{53.6f, 47.2f},
+{53.2f, 47.8f},
+{52.7f, 48.4f},
+{52.1f, 49.0f},
+{51.7f, 49.7f},
+{51.1f, 50.4f},
+{50.6f, 51.1f},
+{50.1f, 51.8f},
+{49.5f, 52.6f},
+{49.3f, 53.0f},
+{49.6f, 53.1f},
+{49.8f, 53.2f},
+{50.0f, 53.3f},
+{50.3f, 53.4f},
+{50.6f, 53.5f},
+{50.8f, 53.6f},
+{51.1f, 53.8f},
+{51.3f, 54.0f},
+{51.6f, 54.2f},
+{51.8f, 54.4f},
+{52.1f, 54.6f},
+{52.4f, 54.8f},
+{52.6f, 55.1f},
+{52.9f, 55.4f},
+{53.2f, 55.6f},
+{53.5f, 56.0f},
+{53.8f, 56.3f},
+{54.1f, 56.6f},
+{54.4f, 57.0f},
+{54.7f, 57.4f},
+{55.0f, 57.8f},
+{55.3f, 58.2f},
+{55.6f, 58.6f},
+{56.0f, 59.1f},
+{56.3f, 59.6f},
+{56.6f, 60.1f},
+{57.0f, 60.6f},
+{57.4f, 61.2f},
+{57.7f, 61.8f},
+{58.1f, 62.4f},
+{58.5f, 63.1f},
+{58.9f, 63.7f},
+{59.3f, 64.4f},
+{59.8f, 65.2f},
+{60.2f, 65.9f},
+{60.7f, 66.7f},
+{61.1f, 67.6f},
+{61.6f, 68.4f},
+{62.1f, 69.4f},
+{62.6f, 70.3f},
+{63.1f, 71.2f},
+{63.7f, 72.3f},
+{64.3f, 73.4f},
+{64.9f, 74.4f},
+{65.5f, 75.7f},
+{66.1f, 76.8f},
+{66.8f, 78.1f},
+{67.5f, 79.4f},
+{68.2f, 80.7f},
+{68.6f, 81.8f},
+{68.0f, 81.8f},
+{67.3f, 81.8f},
+{66.7f, 81.9f},
+{66.1f, 82.0f},
+{65.6f, 82.1f},
+{65.0f, 82.2f},
+{64.5f, 82.3f},
+{63.9f, 82.4f},
+{63.4f, 82.5f},
+{62.9f, 82.7f},
+{62.4f, 82.8f},
+{61.9f, 83.0f},
+{61.5f, 83.2f},
+{61.0f, 83.3f},
+{60.6f, 83.6f},
+{60.2f, 83.8f},
+{59.8f, 83.9f},
+{59.4f, 84.2f},
+{59.0f, 84.4f},
+{58.6f, 84.6f},
+{58.2f, 84.9f},
+{57.9f, 85.1f},
+{57.5f, 85.4f},
+{57.2f, 85.6f}
+};
+
+#include "hellwig_lib.h"
+#include "ColorConversion.h"
+
+/* __CONSTANT__ float2 TABLE[6] =
+{
+    { 0.1f,  0.00759836f},
+    { 0.2f,  1.00186000f},
+    { 0.35f,  0.00533002f},
+    { 0.6f,  0.00759836f},
+    { 0.92f,  1.00186000f},
+    { 1.0f,  0.00533002f}
+}; */
+
+__DEVICE__ float3 input_RGB_to_linear(float3 rgb, int Timeline_color_space)
+{
+	if (Timeline_color_space == 0) return DaVinci_Intermediate_to_linear(rgb);
+	else return rgb;
+}
+
+__DEVICE__ float3 linear_to_output_RGB(float3 rgb, int Timeline_color_space)
+{
+	if (Timeline_color_space == 0) return linear_to_DaVinci_Intermediate(rgb);
+	else return rgb;
+}
+
+__DEVICE__ float interpolate1D(__CONSTANTREF__ float2* p_Table, int p_Size, float p_Val)
+{
+    if (p_Val < p_Table[0].x)
+    {
+		float t = (p_Val - p_Table[p_Size - 1].x + 360) / (p_Table[0].x - p_Table[p_Size - 1].x + 360);
+        return (1 - t) * p_Table[p_Size - 1].y + t * p_Table[0].y;
+    }
+	
+	if (p_Val >= p_Table[p_Size - 1].x)
+    {
+		float t = (p_Val - p_Table[p_Size - 1].x) / (p_Table[0].x - p_Table[p_Size - 1].x + 360);
+        return (1 - t) * p_Table[p_Size - 1].y + t * p_Table[0].y;
+    }
+	
+    for (int i = 0; i < p_Size; ++i)
+    {
+        if (p_Val >= p_Table[i].x && p_Val < p_Table[i + 1].x)
+        {
+            float t = (p_Val - p_Table[i].x) / (p_Table[i + 1].x - p_Table[i].x);
+            return (1 - t) * p_Table[i].y + t * p_Table[i + 1].y;
+        }
+    }
+	
+    return 0.0f; // won't reach here
+}
+
+__DEVICE__ float3 transform(int p_Width, int p_Height, int p_X, int p_Y, float p_R, float p_G, float p_B)
+{
+	if (HDR) daniele_n = 1000.0f;
+	else daniele_n = 100.0f;
+	
+	float2 hue_lum_manipulation_table[6] =
+	{
+		{ angleR,  lumR},
+		{ angleY,  lumY},
+		{ angleG,  lumG},
+		{ angleC,  lumC},
+		{ angleB,  lumB},
+		{ angleM,  lumM}
+	};
+	
+	if (invert)
+	{
+		float3 rgb = input_RGB_to_linear(make_float3(p_R, p_G, p_B), Timeline_color_space);
+		
+		float3 JzMzhz_out = DWG_to_ZCAM_JMh(rgb * referenceLuminance);
+		
+		float L_out = ZCAM_JMh_to_DWG( make_float3(JzMzhz_out.x, 0, 0) ).x / referenceLuminance;
+		float L_in = daniele_evo_rev(L_out);
+		
+		
+		float saturation = DWG_to_JzCzhz(ZCAM_JMh_to_DWG(JzMzhz_out)).y / DWG_to_JzCzhz(ZCAM_JMh_to_DWG(JzMzhz_out)).x * 2;
+		float t = _saturatef(saturation);	// <-- transition
+		// This is not the original saturation, which means that the inversion is not perfect.
+		
+		float L_in_manipulated = L_in * interpolate1D(hue_lum_manipulation_table, 6, JzMzhz_out.z);
+		L_in_manipulated = (1-t) * L_in + t * L_in_manipulated;
+		float L_c = L_in_manipulated;
+		
+		float c = ( _log10f(daniele_evo_fwd(L_c + 0.001)) - _log10f(daniele_evo_fwd(L_c)) ) / ( _log10f(L_c + 0.001) - _log10f(L_c) );
+		if (daniele_evo_fwd(L_c) > daniele_n/referenceLuminance) c = 0;
+		
+		float s = ( (1 + slider_k1) * spow(c, slider_k2) ) / ( 1 + slider_k1 * spow(c, slider_k2) ) * sat;
+		
+		JzMzhz_out.y = (isinf(JzMzhz_out.y / s)) ? JzMzhz_out.y : JzMzhz_out.y / s;
+		
+		rgb = (isnan(L_in/L_out)) ? rgb = make_float3(0,0,0) : rgb = ZCAM_JMh_to_DWG(JzMzhz_out) * L_in/L_out / referenceLuminance;
+		
+		float3 JzMzhz_in = DWG_to_ZCAM_JMh(rgb * referenceLuminance);
+		
+		return linear_to_output_RGB(ZCAM_JMh_to_DWG(make_float3(JzMzhz_in.x, JzMzhz_in.y, JzMzhz_out.z)) / referenceLuminance, Timeline_color_space);
+	}
+	else
+	{
+		float3 rgb = input_RGB_to_linear(make_float3(p_R, p_G, p_B), Timeline_color_space);
+		
+		float3 JzMzhz_in = DWG_to_ZCAM_JMh(rgb * referenceLuminance);
+		
+		float L_in = ZCAM_JMh_to_DWG( make_float3(JzMzhz_in.x, 0, JzMzhz_in.z) ).x / referenceLuminance;
+		L_in = _fmaxf(L_in, 0.0000000001);	// L_in must be >0 to prevent artifacts (NaN)
+		float L_out = daniele_evo_fwd(L_in);
+		
+		rgb = rgb / L_in * L_out * referenceLuminance;
+		
+		float3 JzMzhz_out = DWG_to_ZCAM_JMh(rgb);
+		
+		// Prevent yellow desaturating too early
+		float saturation = DWG_to_JzCzhz(rgb).y / DWG_to_JzCzhz(rgb).x * 2;
+		float t = _saturatef(saturation);	// <-- transition
+		
+		float L_in_manipulated = L_in * interpolate1D(hue_lum_manipulation_table, 6, JzMzhz_in.z);
+		L_in_manipulated = (1-t) * L_in + t * L_in_manipulated;
+		float L_c = L_in_manipulated;
+		
+		float c = ( _log10f(daniele_evo_fwd(L_c + 0.001)) - _log10f(daniele_evo_fwd(L_c)) ) / ( _log10f(L_c + 0.001) - _log10f(L_c) );
+		if (daniele_evo_fwd(L_c) > daniele_n/referenceLuminance) c = 0;
+		
+		float s = ( (1 + slider_k1) * spow(c, slider_k2) ) / ( 1 + slider_k1 * spow(c, slider_k2) ) * sat;
+		JzMzhz_out.y *= s;
+		
+		return linear_to_output_RGB(ZCAM_JMh_to_DWG(make_float3(JzMzhz_out.x, JzMzhz_out.y, JzMzhz_in.z)) / referenceLuminance, Timeline_color_space);
+	}
+}
